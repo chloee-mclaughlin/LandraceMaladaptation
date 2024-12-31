@@ -1,0 +1,2 @@
+data/RDA_Objects/*.rds filter=lfs diff=lfs merge=lfs -text
+data/Genotypes/LDpruned_Genotypes/*.txt filter=lfs diff=lfs merge=lfs -text

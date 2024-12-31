@@ -1,0 +1,182 @@
+---
+title: "GFOffset_AllCrops"
+author: "Chloee McLaughlin"
+date: "2023-11-15"
+output: html_document
+---
+Script to calculate GF offset for each crop 
+
+```{r load libraries, include=FALSE}
+library(dplyr)
+library(data.table)
+library(conformal)
+library(extendedForest)
+library(gradientForest)
+```
+
+```{r set working directory}
+setwd("~/OneDrive - The Pennsylvania State University/Research/Food Resilience/NatComm_R1/data/")
+```
+
+Load all objects required to run each GF-offset loop 
+```{r load GF objects}
+## Select the correct GF object
+#gf <- readRDS("../output/GF_RDS/GF_Barley.rds")
+gf <- readRDS("../output/GF_RDS/GF_Maize.rds")
+#gf <- readRDS("../output/GF_RDS/GF_Indica.rds")
+#gf <- readRDS("../output/GF_RDS/GF_Japonica.rds")
+#gf <- readRDS("../output/GF_RDS/GF_Sorghum.rds")
+  
+## Averaged control data across all simulated years, also made in 2.GradientForest_AllCrops.Rmd script 
+load('../data/store.control_all.RData') 
+
+#store.control <- store.control_b
+store.control <- store.control_m
+#store.control <- store.control_i
+#store.control <- store.control_j
+#store.control <- store.control_s
+
+imp.vars <- names(gf$overall.imp)
+
+pred.gf <- predict(gf, store.control[, imp.vars])
+
+climate.aspect <- c("maturity_days", 
+                    "water_cum_adj", "water_veg", "water_repro_adj",
+                    "tmpavg_cum_adj", "tmpavg_veg", "tmpavg_repro_adj",
+                    "cold_cum_adj", "cold_veg", "cold_repro_adj", 
+                    "solar_cum_adj", "solar_veg", "solar_repro_adj")  #only for barley, add "_adj' to the veg variables 
+```
+
+```{r Control scenario}
+#control.climate <- read.csv("../data/GF_data/Barley_control_FINAL.csv")
+control.climate <- read.csv("../data/GF_data/Maize_control_FINAL.csv")
+#control.climate <- read.csv("../data/GF_data/Indica_control_FINAL.csv")
+#control.climate <- read.csv("../data/GF_data/Japonica_control_FINAL.csv")
+#control.climate <- read.csv("../data/GF_data/Sorghum_control_FINAL.csv")
+
+## only for barley
+#colnames(control.climate) <- gsub("_veg_adj_", "_veg_", colnames(control.climate))
+
+x=NULL
+for (i in 1:21) {
+  #from climate.aspect, selects proper aspects of climate for the correct year
+  store.control <- control.climate[paste(climate.aspect,'_', i, sep='')]
+  
+  ##adjust variable name to match element in gf
+  colnames(store.control) <- sub(i , 'avg', colnames(store.control))
+ 
+  proj.gf <- predict(gf, store.control[, imp.vars])
+  
+  temp <- vector("numeric", length = nrow(proj.gf))
+  
+  for (j in imp.vars) {
+    temp <- temp + (proj.gf[,j]-pred.gf[,j])^2
+  }
+  
+  x <- cbind(x, sqrt(temp))
+  }
+
+GenVuln <- as.data.frame(cbind(control.climate[,c("Accession","Latitude", "Longitude")], x))
+GenVuln <- rename(GenVuln, c(offset_1 = 4, offset_2 = 5, offset_3 = 6, offset_4 = 7, offset_5 = 8,
+                             offset_6 = 9, offset_7 = 10, offset_8 = 11, offset_9 = 12, offset_10 = 13,
+                             offset_11 = 14, offset_12 = 15, offset_13 = 16, offset_14 = 17, offset_15 = 18, 
+                             offset_16 = 19, offset_17 = 20, offset_18 = 21, offset_19 = 22, offset_20 = 23,
+                             offset_21 = 24))
+
+#write.csv(GenVuln, "../output/Offset/BarleyOffset_PrewarAndControlAvg_FINAL.csv")
+write.csv(GenVuln, "../output/Offset/MaizeOffset_PrewarAndControlAvg_FINAL.csv")
+#write.csv(GenVuln, "../output/Offset/IndicaOffset_PrewarAndControlAvg_FINAL.csv")
+#write.csv(GenVuln, "../output/Offset/JaponicaOffset_PrewarAndControlAvg_FINAL.csv")
+#write.csv(GenVuln, "../output/Offset/SorghumOffset_PrewarAndControlAvg_FINAL.csv")
+```
+
+```{r Target 1-5 scenario}
+#target <- read.csv("../data/GF_data/Barley_targets_FINAL.csv")
+target <- read.csv("../data/GF_data/Maize_targets_FINAL.csv")
+#target <- read.csv("../data/GF_data/Indica_targets_FINAL.csv") 
+#target <- read.csv("../data/GF_data/Japonica_targets_FINAL.csv") 
+#target <- read.csv("../data/GF_data/Sorghum_targets_FINAL.csv")
+
+##only for barley
+#colnames(target) <- gsub("_veg_adj_", "_veg_", colnames(target))
+
+for (d in (1:5)){
+  target.env_1 <- target %>% filter(scenario == paste0("nw_targets_0", d)) 
+  
+  env.tar <- target.env_1[target.env_1$Accession%in%control.climate$Accession,]
+  target.climate <- env.tar[match(control.climate$Accession, env.tar$Accession),]
+  
+  #colnames(target.climate) <- gsub("_veg_adj_", "_veg_", colnames(target.climate))
+
+  x=NULL
+
+  for (i in 5:19) {
+  store.target <- target.climate[paste(climate.aspect,'_', i, sep='')]
+  
+  colnames(store.target) <- sub(i , 'avg', colnames(store.target))
+
+  proj.gf <- predict(gf, store.target[, imp.vars])
+  
+  temp <- vector("numeric", length = nrow(proj.gf))
+  
+  for (j in imp.vars) {
+    temp <- temp + (proj.gf[,j]-pred.gf[,j])^2
+  }
+  
+  x <- cbind(x, sqrt(temp))
+  }
+  
+  GenVuln <- as.data.frame(cbind(target.climate[,c("Accession","Latitude", "Longitude")], x))
+  GenVuln <- rename(GenVuln, c(offset_5 = 4, offset_6 = 5, offset_7 = 6, offset_8 = 7, offset_9 = 8, offset_10 = 9,
+                               offset_11 = 10, offset_12 = 11, offset_13 = 12, offset_14 = 13, offset_15 = 14, 
+                               offset_16 = 15, offset_17 = 16, offset_18 = 17, offset_19 = 18))
+
+#write.csv(GenVuln, file=paste0("../output/Offset/BarleyOffset_targets_0", d,"_FINAL.csv"))
+write.csv(GenVuln, file=paste0("../output/Offset/MaizeOffset_targets_0", d,"_FINAL.csv"))
+#write.csv(GenVuln, file=paste0("../output/Offset/IndicaOffset_targets_0", d,"_FINAL.csv"))
+#write.csv(GenVuln, file=paste0("../output/Offset/JaponicaOffset_targets_0", d,"_FINAL.csv"))
+#write.csv(GenVuln, file=paste0("../output/Offset/SorghumOffset_targets_0", d,"_FINAL.csv"))
+}
+```
+
+```{r Target 150 scenario}
+#target <- read.csv("../data/GF_data/Barley_targets150_FINAL.csv")
+target <- read.csv("../data/GF_data/Maize_targets150_FINAL.csv")
+#target <- read.csv("../data/GF_data/Indica_targets150_FINAL.csv") 
+#target <- read.csv("../data/GF_data/Japonica_targets150_FINAL.csv") 
+#target <- read.csv("../data/GF_data/Sorghum_targets150_FINAL.csv")
+
+## Only for barley
+#colnames(target) <- gsub("_veg_adj_", "_veg_", colnames(target))
+
+x=NULL
+for (i in 5:21) { # USE for (i in 6:21) { for barley. First year of data has some NAs from winter planting,
+
+  store.target <- target[paste(climate.aspect,'_', i, sep='')]
+  #store.target <- target.climate[paste(climate.aspect,'_', i, sep='')]
+  
+  colnames(store.target) <- sub(i , 'avg', colnames(store.target))
+  
+  proj.gf <- predict(gf, store.target[, imp.vars])
+  
+  temp <- vector("numeric", length = nrow(proj.gf))
+  
+  for (j in imp.vars) {
+    temp <- temp + (proj.gf[,j]-pred.gf[,j])^2
+  }
+  
+  x <- cbind(x, sqrt(temp))
+}
+
+GenVuln <- as.data.frame(cbind(target[,c("Accession","Latitude", "Longitude")], x))
+GenVuln <- rename(GenVuln, c(offset_5 = 4, offset_6 = 5, offset_7 = 6, offset_8 = 7, offset_9 = 8, offset_10 = 9,
+                               offset_11 = 10, offset_12 = 11, offset_13 = 12, offset_14 = 13, offset_15 = 14, 
+                               offset_16 = 15, offset_17 = 16, offset_18 = 17, offset_19 = 18, offset_20 = 19,
+                             offset_21 = 20))
+
+#write.csv(GenVuln, file="../output/Offset/BarleyOffset_ur_150_FINAL.csv")
+write.csv(GenVuln, file="../output/Offset/MaizeOffset_ur_150_FINAL.csv")
+#write.csv(GenVuln, file="../output/Offset/IndicaOffset_ur_150_FINAL.csv")
+#write.csv(GenVuln, file="../output/Offset/JaponicaOffset_ur_150_FINAL.csv")
+#write.csv(GenVuln, file="../output/Offset/SorghumOffset_ur_150_FINAL.csv")
+```

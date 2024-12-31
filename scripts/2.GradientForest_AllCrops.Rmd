@@ -1,0 +1,139 @@
+---
+title: "GradientForest_AllCrops"
+author: "Chloee McLaughlin"
+date: "2023-11-15"
+output: html_document
+---
+
+Build GF objects for all crops
+
+The structure of this script is...
+Each chunk corresponds to a crop and sets up the required for inputs in the gradient forest (GF) chunk at the end of the script
+
+```{r load libraries, include=FALSE}
+library(dplyr)
+library(data.table)
+library(conformal)
+library(extendedForest)
+library(gradientForest)
+```
+
+```{r set working directory}
+setwd("~/OneDrive - The Pennsylvania State University/Research/Food Resilience/NatComm_R1/data/")
+```
+
+```{r, load averaged control}
+# Load data of Control averaged Cycles-derived variables for each crop species
+load('../data/store.control_all.RData') 
+```
+
+```{r barley set-up, echo=FALSE}
+## Climate Data
+control.climate_b <- read.csv("../data/GF_data/Barley_control_FINAL.csv")
+
+## Genotypic data
+geno_b<- fread("../data/Genotypes/ForGF/geno.b_FinalSNPs.txt", drop = 1)
+geno_b <- data.frame(geno_b, row.names = 1)
+geno_b <- geno_b[rownames(geno_b)%in%control.climate_b$Accession,] ## Sanity check
+
+# Format for GF
+geno.dat <- geno_b %>% mutate(across(where(is.integer), as.factor)) 
+geno.dat_b <- geno.dat %>% select_if(~length(unique(.)) > 1)
+geno.dat_b <- geno.dat_b[ , colSums(is.na(geno.dat_b)) == 0]
+
+## Define maximum number of splits for GF 
+lev_b <- log2(0.368*nrow(geno_b)/2)
+```
+
+```{r maize set-up, echo=FALSE}
+## Climate Data
+control.climate_m <- read.csv("../data/GF_data/Maize_control_FINAL.csv")
+
+## Genotypic data
+geno_m <- fread("../data/Genotypes/ForGF/geno.m_FinalSNPs.txt", drop = 1)
+geno_m <- data.frame(geno_m, row.names = 1)
+geno_m <- geno_m[rownames(geno_m)%in%control.climate_m$Accession,] ## Sanity check
+
+# Format for GF
+geno.dat <- geno_m %>% mutate(across(where(is.integer), as.factor)) 
+geno.dat_m <-  geno.dat %>% select_if(~length(unique(.)) > 1)
+
+## Define maximum number of splits for GF 
+lev_m <- log2(0.368*nrow(geno.dat_m)/2)
+```
+
+```{r rice, echo=FALSE}
+## Climate Data
+control.climate_j <- read.csv("../data/GF_data/Japonica_control_FINAL.csv")
+control.climate_i <- read.csv("../data/GF_data/Indica_control_FINAL.csv")
+
+## Genotypic data
+# Japonica
+geno_j <- fread("../data/Genotypes/ForGF/geno.j_FinalSNPs.txt", drop = 1)
+geno_j <- data.frame(geno_j, row.names = 1)
+geno_j <- geno_j[rownames(geno_j)%in%control.climate_j$Accession,] ## Sanity check
+
+# Format for GF
+geno.dat_j <- geno_j %>% mutate(across(where(is.integer), as.factor)) 
+geno.dat_j <-  geno.dat_j %>% select_if(~length(unique(.)) > 1)
+
+# Indica
+geno_i <- fread("../data/Genotypes/ForGF/geno.i_FinalSNPs.txt", drop = 1)
+geno_i <- data.frame(geno_i, row.names = 1)
+geno_i <- geno_i[rownames(geno_i)%in%control.climate_i$Accession,] ## Sanity check
+
+# Format for GF
+geno.dat_i <- geno_i %>% mutate(across(where(is.integer), as.factor)) 
+geno.dat_i <-  geno.dat_i %>% select_if(~length(unique(.)) > 1)
+
+## Define maximum number of splits for GF 
+lev_i <- log2(0.368*nrow(geno.dat_i)/2) 
+
+## Define maximum number of splits for GF 
+lev_j <- log2(0.368*nrow(geno.dat_j)/2) 
+```
+
+```{r sorghum, echo=FALSE}
+## Climate Data
+control.climate_s <- read.csv("../data/GF_data/Sorghum_control_FINAL.csv")
+
+## Genotypic data
+geno_s <- fread("../data/Genotypes/ForGF/geno.s_FinalSNPs.txt", drop = 1)
+geno_s <- data.frame(geno_s, row.names = 1)
+geno_s <- geno_s[rownames(geno_s)%in%control.climate_s$Accession,] ## Sanity check
+
+# Format for GF
+geno.dat_s <- geno_s %>% mutate(across(where(is.integer), as.factor)) 
+geno.dat_s <-  geno.dat_s %>% select_if(~length(unique(.)) > 1)
+
+## Define maximum number of splits for GF 
+lev_s <- log2(0.368*nrow(geno.dat_s)/2)
+```
+
+GRADIENT FOREST OBJECT BUILD + SAVE 
+Uncomment the correct objects to run for the crop of interest
+```{r GF build, echo=FALSE}
+
+store.control = store.control_m #store.control_b  store.control_i, store.control_j, store.control_m, store.control_s
+
+geno.dat = geno.dat_m # geno.dat_b geno.dat_i, geno.dat_j, geno.dat_m, geno.dat_s
+
+lev = lev_m # lev_b  lev_i, lev_j, lev_m, lev_s
+
+gf <- gradientForest(cbind(store.control, geno.dat),
+                     predictor.vars = colnames(store.control),
+                     response.vars = colnames(geno.dat),
+                     ntree = 500, transform = NULL, compact = T,
+                     maxLevel = lev, corr.threshold = 0.5)
+
+#saveRDS(gf, file="../output/GF_RDS/GF_Barley.rds")
+saveRDS(gf, file="../output/GF_RDS/GF_Maize.rds")
+#saveRDS(gf, file="../output/GF_RDS/GF_Indica.rds")
+#saveRDS(gf, file="../output/GF_RDS/GF_Japonica.rds")
+#saveRDS(gf, file="../output/GF_RDS/GF_Sorghum.rds")
+
+gf <- readRDS("../output/GF_RDS/GF_Maize.rds")
+
+## Fig S5
+plot(gf, plot.type="Overall.Importance")
+```

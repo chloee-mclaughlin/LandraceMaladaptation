@@ -1,0 +1,591 @@
+---
+title: "RDA_CyclesClimate_AssociatedSNPs"
+author: "Chloee McLaughlin"
+date: "11/09/2023"
+output: html_document
+---
+```{r, libraries}
+library(vegan)
+library(qvalue)
+library(robust)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ggrepel)
+library(cowplot)
+```
+
+NOTE! Not all files exist in the GitHub directory to recreate this script (genotype data used here is published elsewhere, file paths ../data/Genotypes/LDpruned_Genotypes/ and ../data/Genotypes/FT_loci). This script merely shows the process to make the pRDA objects and the SNP matrices for the genomic models. 
+
+The pRDA objects (models used to select the top 1,000 environmentally-related SNPs) are written out in ../data/RDA_Objects/
+
+The SNP matrices of the pRDA-identified top 1,000 SNPs related to variation in the Cycles-modeled control climate + FT SNPs are written out in ../data/Genotypes/ForGF/
+
+pRDA usage is adapted from Capblancq & Forest 2021 (https://doi.org/10.1111/2041-210X.13722)
+
+```{r setwd,}
+setwd("~/OneDrive - The Pennsylvania State University/Research/Food Resilience/NatComm_R1/data/")
+```
+
+```{r, radapt function}
+#From Capblancq et al 2018  https://doi.org/10.1111/1755-0998.12906
+#The function returning p-values and q-values for all the loci
+rdadapt <- function(rda,K)
+{
+  zscores<-rda$CCA$v[,1:as.numeric(K)]
+  resscale <- apply(zscores, 2, scale)
+  resmaha <- covRob(resscale, distance = TRUE, na.action= na.omit, estim="pairwiseGK")$dist
+  lambda <- median(resmaha)/qchisq(0.5,df=K)
+  reschi2test <- pchisq(resmaha/lambda,K,lower.tail=FALSE)
+  qval <- qvalue(reschi2test)
+  q.values_rdadapt<-qval$qvalues
+  return(data.frame(p.values=reschi2test, q.values=q.values_rdadapt))
+}
+```
+
+```{r, passport/waypoint info for all crop species accessions}
+# Waypoint (Lat/Long) data for all accessions
+AllCrops <- read.csv("../data/FoodResilience_Accessions_Waypoint.csv") 
+
+BarleyMaster <- AllCrops %>% filter(Species == "Barley")
+MaizeMaster <- AllCrops %>% filter(Species == "Maize")
+RiceMaster <- AllCrops %>% filter(Species == "Rice")
+SorghumMaster <- AllCrops %>% filter(Species == "Sorghum")
+
+# Load data of Control averaged conditions for each crop species
+load('../data/store.control_all.RData') 
+```
+
+```{r BARLEY}
+# Barley genetic data
+geno.b <- read.table("./Genotypes/LDpruned_Genotypes/barley_LD_pruned_recoded.txt", header=T)
+geno.b$IID <- gsub("Sample_", "", geno.b$IID)
+
+## Restrict and sort geno file by accessions in store.control_b and drop extra INFO columns
+geno.b.sub <- subset(geno.b[-c(1,3:6)], (IID %in% rownames(store.control_b)))
+geno.b.sub <- geno.b.sub[ , apply(geno.b.sub, 2, function(x) !any(is.na(x)))]
+
+store.control_b <- store.control_b %>%
+  tibble::rownames_to_column(var = "Accession")
+
+# Perform the join
+env.coord.b <- left_join(store.control_b, BarleyMaster, by = "Accession")
+
+## Estimating population allele frequencies, we don't necessarily have populations, but we do have geocoordinates with multiple accessions
+AllFreq.b <- aggregate(geno.b.sub, by = list(paste(env.coord.b$Latitude, env.coord.b$Longitude)), function(x) mean(x, na.rm = T)) 
+row.names(AllFreq.b) <- as.character(AllFreq.b$Group.1)
+
+agg.env.b <- aggregate(env.coord.b, by = list(paste(env.coord.b$Latitude, env.coord.b$Longitude)), function(x) mean(x, na.rm = T))
+
+## Extracting the first 3 PCs to account for population structure in the pRDA
+pca.b <- rda(AllFreq.b[,-c(1:2)], scale=T)
+PCs.b <- scores(pca.b, choices=c(1:3), display="sites", scaling=0)
+PopStruct.b <- data.frame(Population = AllFreq.b[,1], PCs.b)
+colnames(PopStruct.b) <- c("Population", "PC1", "PC2", "PC3")
+
+## Bind population structure data to the climate data for each "Population" 
+Variables.b <- left_join(PopStruct.b, agg.env.b[,-c(2,18)], by=c("Population"="Group.1"))
+
+## Scan the genome for loci associated with  variables we will use in the GF models 
+RDA_env.b <- rda(AllFreq.b[-c(1:2)] ~ maturity_days_avg + water_cum_adj_avg + water_veg_avg +
+                    water_repro_adj_avg + tmpavg_cum_adj_avg + tmpavg_veg_avg +
+                    tmpavg_repro_adj_avg + cold_cum_adj_avg + cold_veg_avg + cold_repro_adj_avg +
+                    solar_cum_adj_avg + solar_veg_avg + solar_repro_adj_avg +
+                    Condition(PC1 + PC2 + PC3), Variables.b)
+
+saveRDS(RDA_env.b, file="./RDA_Objects/Barley_RDAmodel_output.rds")
+#RDA_env.b <- readRDS("./RDA_Objects/Barley_RDAmodel_output.rds")
+
+screeplot(RDA_env.b, main="Eigenvalues of constrained axes")
+
+# Run the radapt function to return q- and p-values for all loci included in the pRDA model 
+rdadapt_env.b <- rdadapt(RDA_env.b, 2) 
+rownames(rdadapt_env.b) <- names(RDA_env.b[["colsum"]])
+
+Loci = head(RDA_env.b[["Ybar"]])
+
+# Outliers by z-score 
+outliers_new.b <- rdadapt_env.b %>%     
+  arrange(p.values) %>% 
+  slice(1:1000) %>%
+  tibble::rownames_to_column(., "Loci")
+
+## List of outlier names
+outliers_rdadapt_env.b <- as.character(outliers_new.b$Loci) 
+
+locus_scores.b <- scores(RDA_env.b, choices=c(1:2), display="species", scaling="none") 
+
+TAB_loci.b <- cbind(locus_scores.b, rdadapt_env.b)
+TAB_loci.b <- TAB_loci.b %>% mutate(type =
+                     case_when(p.values > 0.003521612 ~ "Neutral", ## Value from outliers_new
+                               p.values < 0.003521612 ~ "Outliers"))
+
+# Pull the biplot scores
+TAB_var.b <- as.data.frame(scores(RDA_env.b, choices=c(1,2), display="bp"))
+
+## Get % variation described by the first two pRDA axes 
+## Variation of constrained pRDA axis/All variation of constrained axes 
+(RDA_env.b[["CCA"]]$eig[1]/RDA_env.b[["CCA"]]$tot.chi)*100 
+(RDA_env.b[["CCA"]]$eig[2]/RDA_env.b[["CCA"]]$tot.chi)*100
+
+## Variation of constrained pRDA axis/All variation of unconstrained axes 
+(RDA_env.b[["CCA"]]$eig[1]/RDA_env.b$tot.chi)*100 #RDA_env.m$tot.chi
+(RDA_env.b[["CCA"]]$eig[2]/RDA_env.b$tot.chi)*100
+
+## Biplot of RDA loci and variables scores
+b_FigS4 <- ggplot() +
+  geom_point(data = TAB_loci.b, aes(x=RDA1, y=RDA2, colour = type), size = 1.4, alpha = 0.4) +
+  geom_segment(data = TAB_var.b, aes(xend=RDA1*.03, yend=RDA2*.03, x=0, y=0), colour="black", size=0.25, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+ geom_text_repel(data = TAB_var.b, aes(x=RDA1*0.03, y=RDA2*.03, label = c("maturity days", "water stress", "water stress (vegetative)", "average temp", "average temp (vegetative)", "cold temp", "cold temp (vegetative)", "solar radiation", "solar radiation (vegetative)")), size = 3) +
+  ggtitle("Barley") + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "RDA1 (1.8537%)",    
+       y = "RDA2 (1.4114%)") +
+  scale_color_manual(values = c("#CCB6B6","#776565"))
+
+## Make a file of the environmentally-related sites
+write.csv(outliers_rdadapt_env.b, file="./Genotypes/pRDA_Outliers/B_outliers_rdadapt_env.csv")
+#outliers_rdadapt_env.b <- read.csv("./Genotypes/pRDA_Outliers/B_outliers_rdadapt_env.csv")
+
+geno.b_ENV <- geno.b.sub[, which((names(geno.b.sub) %in% outliers_rdadapt_env.b)==TRUE)]
+
+geno.b_FT <- read.table("./Genotypes/FT_loci/barley_outFT_prunedLD_recoded.txt", header=T)
+geno.b_FT$IID <- gsub("Sample_", "", geno.b_FT$IID)
+
+geno.b_FT <- subset(geno.b_FT[-c(1,3:6)], (IID %in% geno.b.sub$IID))
+
+# Retain only the unique sites across the set of FT and climate-related SNPs
+geno.b_FINAL <- unique(cbind(geno.b_FT, geno.b_ENV))
+
+write.csv(geno.b_FINAL, file="./Genotypes/ForGF/geno.b_FinalSNPs.txt")
+#geno.b_FINAL <- read.csv("./Genotypes/ForGF/geno.b_FinalSNPs.txt")
+```
+
+```{r MAIZE}
+# Maize genetic data
+geno.m <- read.table("./Genotypes/LDpruned_Genotypes/maize_LD_pruned_recoded.txt", header=T)
+geno.m$IID <- gsub("\\:.*", "", geno.m$IID)
+geno.m <- geno.m[ , colSums(is.na(geno.m[-c(1:6)]))==0] 
+
+## Restrict and sort geno file by accessions in store.control_m and drop extra INFO columns
+geno.m.sub <- subset(geno.m[-c(1,3:6)], (IID %in% rownames(store.control_m)))
+geno.m.sub <- (geno.m.sub[!duplicated(geno.m.sub[,c('IID')]),]) ## Ensure removal of duplicated 
+
+store.control_m <- store.control_m %>%
+  tibble::rownames_to_column(var = "Accession")
+
+# Perform the join
+env.coord.m <- left_join(store.control_m, MaizeMaster, by = "Accession")
+
+## Estimating population allele frequencies, we don't necessarily have populations, but we do have geocoordinates with multiple accessions
+AllFreq.m <- aggregate(geno.m.sub, by = list(paste(env.coord.m$Latitude, env.coord.m$Longitude)), function(x) mean(x, na.rm = T))
+row.names(AllFreq.m) <- as.character(AllFreq.m$Group.1)
+
+agg.env.m <- aggregate(env.coord.m, by = list(paste(env.coord.m$Latitude, env.coord.m$Longitude)), function(x) mean(x, na.rm = T))
+
+## Extracting the first 3 PCs to account for population structure in the pRDA
+pca.m <- rda(AllFreq.m[,-c(1:2)], scale=T)
+PCs.m <- scores(pca.m, choices=c(1:3), display="sites", scaling=0)
+PopStruct.m <- data.frame(Population = AllFreq.m[,1], PCs.m)
+colnames(PopStruct.m) <- c("Population", "PC1", "PC2", "PC3")
+
+## Bind population structure data to the aggregated, averaged climate data for each "Population" 
+Variables.m <- left_join(PopStruct.m, agg.env.m[,-c(2,18)], by=c("Population"="Group.1"))
+
+## In case NAs persist?
+#AllFreq.m.sub <- AllFreq.m[ , apply(AllFreq.m, 2, function(x) !any(is.na(x)))]
+
+## Scan the genome for loci associated with  variables we will use in the GF models 
+RDA_env.m <- rda(AllFreq.m.sub[-c(1:2)] ~ maturity_days_avg + water_cum_adj_avg + water_veg_avg +
+                    water_repro_adj_avg + tmpavg_cum_adj_avg + tmpavg_veg_avg +
+                    tmpavg_repro_adj_avg + cold_cum_adj_avg + cold_veg_avg + cold_repro_adj_avg +
+                    solar_cum_adj_avg + solar_veg_avg  + solar_repro_adj_avg +
+                    Condition(PC1 + PC2 + PC3), Variables.m)
+
+#saveRDS(RDA_env.m, file="./RDA_Objects/Maize_RDAmodel_output.rds")
+RDA_env.m <- readRDS("./RDA_Objects/Maize_RDAmodel_output.rds")
+
+screeplot(RDA_env.m, main="Eigenvalues of constrained axes")
+
+# Run the radapt function to return q- and p-values for all loci included in the pRDA model 
+rdadapt_env.m <- rdadapt(RDA_env.m, 2) 
+rownames(rdadapt_env.m) <- names(RDA_env.m[["colsum"]])
+
+Loci = head(RDA_env.m[["Ybar"]])
+
+# Outliers by z-score 
+outliers_new.m <- rdadapt_env.m %>%     
+  arrange(p.values) %>% 
+  slice(1:1000) %>%
+  tibble::rownames_to_column(., "Loci")
+
+## List of outlier names
+outliers_rdadapt_env.m <- as.character(outliers_new.m$Loci) 
+
+locus_scores.m <- scores(RDA_env.m, choices=c(1:2), display="species", scaling="none") 
+
+TAB_loci.m <- cbind(locus_scores.m, rdadapt_env.m)
+TAB_loci.m  <- TAB_loci.m %>% mutate(type =
+                     case_when(p.values > 0.0001499585 ~ "Neutral", ## Value from outliers_new
+                               p.values < 0.0001499585 ~ "Outliers"))
+
+TAB_var.m <- as.data.frame(scores(RDA_env.m, choices=c(1,2), display="bp")) # pull the biplot scores
+
+## Get % variation described by the first two pRDA axes 
+## Variation of constrained pRDA axis/All variation of constrained axes
+(RDA_env.m[["CCA"]]$eig[1]/RDA_env.m[["CCA"]]$tot.chi)*100 
+(RDA_env.m[["CCA"]]$eig[2]/RDA_env.m[["CCA"]]$tot.chi)*100
+
+## Variation of constrained pRDA axis/All variation of unconstrained axes 
+(RDA_env.m[["CCA"]]$eig[1]/RDA_env.m$tot.chi)*100 
+(RDA_env.m[["CCA"]]$eig[2]/RDA_env.m$tot.chi)*100
+
+## Biplot of RDA loci and variables scores
+m_FigS4 <-ggplot() +
+  geom_point(data = TAB_loci.m, aes(x=RDA1, y=RDA2, colour = type), size = 1.4, alpha = 0.4) +
+  geom_segment(data = TAB_var.m, aes(xend=RDA1*.03, yend=RDA2*.03, x=0, y=0), colour="black", size=0.25, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+geom_text_repel(data = TAB_var.m, aes(x=RDA1*0.03, y=RDA2*.03, label = c("maturity days", "water stress", "water stress (vegetative)", "average temp", "average temp (vegetative)", "cold temp", "cold temp (vegetative)", "solar radiation", "solar radiation (vegetative)")), size = 3) +
+  ggtitle("Maize") + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "RDA1 (0.23023%)",    
+       y = "RDA2 (0.18203%)") +
+  scale_color_manual(values = c("#CCB6B6","#776565"))
+
+## Make the final SNP files for use in GF
+write.csv(outliers_rdadapt_env.m, file="./Genotypes/pRDA_Outliers/M_outliers_rdadapt_env.csv")
+#outliers_rdadapt_env.m <- read.csv("./Genotypes/pRDA_Outliers/M_outliers_rdadapt_env.csv")
+
+geno.m_ENV <- geno.m.sub[, which((names(geno.m.sub) %in% outliers_rdadapt_env.m)==TRUE)]
+
+geno.m_FT <- read.table("./Genotypes/FT_loci/maize_outFT_prunedLD_recoded.txt", header=T)
+geno.m_FT$IID <- gsub("\\:.*", "", geno.m_FT$IID)
+
+geno.m_FT <- subset(geno.m_FT[-c(1,3:6)], (IID %in% geno.m.sub$IID))
+geno.m_FT <- (geno.m_FT[!duplicated(geno.m_FT[,c('IID')]),]) 
+
+# Retain only the unique sites across the set of FT and climate-related SNPs
+geno.m_FINAL <- unique(cbind(geno.m_FT, geno.m_ENV))
+
+write.csv(geno.m_FINAL, file="./Genotypes/ForGF/geno.m_FinalSNPs.txt")
+#geno.m_FINAL <- read.csv("./Genotypes/ForGF/geno.m_FinalSNPs.txt")
+```
+
+```{r INDICA}
+# Indica genetic data
+geno.i <- read.table("./Genotypes/LDpruned_Genotypes/indica_LD_pruned_recoded.txt", header=T)
+geno.i$IID <- sub('^([^_]+_[^_]+).*', '\\1', geno.i$IID) ## Fix IID names (currently duplicated)
+
+## Restrict and sort geno file by accessions in store.control_b and drop extra INFO columns
+geno.i.sub <- subset(geno.i[-c(1,3:6)], (IID %in% rownames(store.control_i)))
+
+store.control_i <- store.control_i %>%
+  tibble::rownames_to_column(var = "Accession")
+
+# Perform the join
+env.coord.i <- left_join(store.control_i, RiceMaster, by = "Accession")
+
+## Estimating population allele frequencies, we don't necessarily have populations, but we do have geocoordinates with multiple accessions
+AllFreq.i <- aggregate(geno.i.sub, by = list(paste(env.coord.i$Latitude, env.coord.i$Longitude)), function(x) mean(x, na.rm = T)) 
+row.names(AllFreq.i) <- as.character(AllFreq.i$Group.1)
+
+agg.env.i <- aggregate(env.coord.i, by = list(paste(env.coord.i$Latitude, env.coord.i$Longitude)), function(x) mean(x, na.rm = T))
+
+## Extracting the first 3 PCs to account for population structure in the pRDA
+pca.i <- rda(AllFreq.i[,-c(1:2)], scale=T)
+PCs.i <- scores(pca.i, choices=c(1:3), display="sites", scaling=0)
+PopStruct.i <- data.frame(Population = AllFreq.i[,1], PCs.i)
+colnames(PopStruct.i) <- c("Population", "PC1", "PC2", "PC3")
+
+## Bind population structure data to the climate data for each "Population" 
+Variables.i <- left_join(PopStruct.i, agg.env.i[,-c(2,18)], by=c("Population"="Group.1"))
+
+## Scan the genome for loci associated with  variables we will use in the GF models 
+RDA_env.i <- rda(AllFreq.i[-c(1:2)] ~ maturity_days_avg + water_cum_adj_avg + water_veg_avg +
+                   water_repro_adj_avg + tmpavg_cum_adj_avg + tmpavg_veg_avg +
+                   tmpavg_repro_adj_avg + cold_cum_adj_avg + cold_veg_avg + cold_repro_adj_avg +
+                   solar_cum_adj_avg + solar_veg_avg + solar_repro_adj_avg +
+                   Condition(PC1 + PC2 + PC3), Variables.i)
+
+saveRDS(RDA_env.i, file="./RDA_Objects/Indica_RDAmodel_output.rds")
+#RDA_env.i <- readRDS("./RDA_Objects/Indica_RDAmodel_output.rds")
+
+screeplot(RDA_env.i, main="Eigenvalues of constrained axes")
+
+# Run the radapt function to return q- and p-values for all loci included in the pRDA model 
+rdadapt_env.i <- rdadapt(RDA_env.i, 2) 
+rownames(rdadapt_env.i) <- names(RDA_env.i[["colsum"]])
+Loci = head(RDA_env.i[["Ybar"]])
+
+# Outliers by z-score 
+outliers_new.i <- rdadapt_env.i %>%     
+  arrange(p.values) %>% 
+  slice(1:1000) %>%
+  tibble::rownames_to_column(., "Loci")
+
+## List of outlier names
+outliers_rdadapt_env.i <- as.character(outliers_new.i$Loci) 
+
+locus_scores.i <- scores(RDA_env.i, choices=c(1:2), display="species", scaling="none") 
+
+TAB_loci.i <- cbind(locus_scores.i, rdadapt_env.i)
+TAB_loci.i  <- TAB_loci.i %>% mutate(type =
+                     case_when(p.values > 0.004922296 ~ "Neutral", ## Value from outliers_new
+                               p.values < 0.004922296 ~ "Outliers"))
+
+TAB_var.i <- as.data.frame(scores(RDA_env.i, choices=c(1,2), display="bp")) # pull the biplot scores
+
+## Get % variation described by the first two pRDA axes 
+## Variation of constrained pRDA axis/All variation of constrained axes 
+(RDA_env.i[["CCA"]]$eig[1]/RDA_env.i$tot.chi)*100
+(RDA_env.i[["CCA"]]$eig[2]/RDA_env.i$tot.chi)*100
+
+(RDA_env.i[["CCA"]]$eig[1]/RDA_env.i[["CCA"]]$tot.chi)*100
+(RDA_env.i[["CCA"]]$eig[2]/RDA_env.i[["CCA"]]$tot.chi)*100
+
+## Biplot of RDA loci and variables scores
+i_FigS4 <- ggplot() +
+  geom_point(data = TAB_loci.i, aes(x=RDA1, y=RDA2, colour = type), size = 1.4, alpha = 0.4) +
+  geom_segment(data = TAB_var.i, aes(xend=RDA1*.03, yend=RDA2*.03, x=0, y=0), colour="black", size=0.25, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+  geom_text_repel(data = TAB_var.i, aes(x=RDA1*0.03, y=RDA2*.03, label = c("maturity days", "water stress", "water stress (vegetative)", "average temp", "average temp (vegetative)", "cold temp", "cold temp (vegetative)", "solar radiation", "solar radiation (vegetative)")), size = 3) +
+  ggtitle(expression("Rice subsp." * italic(" indica"))) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "RDA1 (0.96895%)",    
+       y = "RDA2 (0.79224%)") +
+  scale_color_manual(values = c("#CCB6B6","#776565"))
+
+## Make a file of the environmentally-related sites
+write.csv(outliers_rdadapt_env.i, file="./Genotypes/pRDA_Outliers/I_outliers_rdadapt_env.csv")
+#outliers_rdadapt_env.i <- read.csv("./Genotypes/pRDA_Outliers/I_outliers_rdadapt_env.csv")
+
+geno.i_ENV <- geno.i.sub[, which((names(geno.i.sub) %in% outliers_rdadapt_env.i)==TRUE)]
+
+geno.i_FT <- read.table("./Genotypes/FT_loci/indica_outFT_prunedLD_recoded.txt", header=T)
+geno.i_FT$IID <- sub('^([^_]+_[^_]+).*', '\\1', geno.i_FT$IID) ## Fix IID names (currently duplicated)
+
+geno.i_FT <- subset(geno.i_FT[-c(1,3:6)], (IID %in% geno.i.sub$IID))
+
+# Retain only the unique sites across the set of FT and climate-related SNPs
+geno.i_FINAL <- unique(cbind(geno.i_FT, geno.i_ENV))
+
+write.csv(geno.i_FINAL, file="./Genotypes/ForGF/geno.i_FinalSNPs.txt")
+#geno.i_FINAL <- read.csv("./Genotypes/ForGF/geno.i_FinalSNPs.txt")
+```
+
+```{r JAPONICA}
+# Japonica genetic data
+geno.j <- read.table("./Genotypes/LDpruned_Genotypes/japonica_LD_pruned_recoded.txt", header=T)
+
+## Restrict and sort geno file by accessions in store.control_b and drop extra INFO columns
+geno.j.sub <- subset(geno.j[-c(1,3:6)], (IID %in% rownames(store.control_j)))
+
+store.control_j <- store.control_j %>%
+  tibble::rownames_to_column(var = "Accession")
+
+# Perform the join
+env.coord.j <- left_join(store.control_j, RiceMaster, by = "Accession")
+
+## Estimating population allele frequencies, we don't necessarily have populations, but we do have geocoordinates with multiple accessions
+AllFreq.j <- aggregate(geno.j.sub, by = list(paste(env.coord.j$Latitude, env.coord.j$Longitude)), function(x) mean(x, na.rm = T)) 
+row.names(AllFreq.j) <- as.character(AllFreq.j$Group.1)
+
+agg.env.j <- aggregate(env.coord.j, by = list(paste(env.coord.j$Latitude, env.coord.j$Longitude)), function(x) mean(x, na.rm = T))
+
+## Extracting the first 3 PCs to account for population structure in the pRDA
+pca.j <- rda(AllFreq.j[,-c(1:2)], scale=T)
+PCs.j <- scores(pca.j, choices=c(1:3), display="sites", scaling=0)
+PopStruct.j <- data.frame(Population = AllFreq.j[,1], PCs.j)
+colnames(PopStruct.j) <- c("Population", "PC1", "PC2", "PC3")
+
+## Bind population structure data to the climate data for each "Population" 
+Variables.j <- left_join(PopStruct.j, agg.env.j[,-c(2,18)], by=c("Population"="Group.1"))
+
+## Scan the genome for loci associated with  variables we will use in the GF models 
+RDA_env.j <- rda(AllFreq.j[-c(1:2)] ~ maturity_days_avg + water_cum_adj_avg + water_veg_avg +
+                   water_repro_adj_avg + tmpavg_cum_adj_avg + tmpavg_veg_avg +
+                   tmpavg_repro_adj_avg + cold_cum_adj_avg + cold_veg_avg + cold_repro_adj_avg +
+                   solar_cum_adj_avg + solar_veg_avg + solar_repro_adj_avg +
+                   Condition(PC1 + PC2 + PC3), Variables.j)
+
+saveRDS(RDA_env.j, file="./RDA_Objects/Japonica_RDAmodel_output.rds")
+#RDA_env.j <- readRDS("./RDA_Objects/Japonica_RDAmodel_output.rds")
+
+screeplot(RDA_env.j, main="Eigenvalues of constrained axes")
+
+# Run the radapt function to return q- and p-values for all loci included in the pRDA model 
+rdadapt_env.j <- rdadapt(RDA_env.j, 2) 
+rownames(rdadapt_env.j) <- names(RDA_env.j[["colsum"]])
+Loci = head(RDA_env.j[["Ybar"]])
+
+# Outliers by z-score 
+outliers_new.j <- rdadapt_env.j %>%     
+  arrange(p.values) %>% 
+  slice(1:1000) %>%
+  tibble::rownames_to_column(., "Loci")
+
+## List of outlier names
+outliers_rdadapt_env.j <- as.character(outliers_new.j$Loci) 
+
+locus_scores.j <- scores(RDA_env.j, choices=c(1:2), display="species", scaling="none") 
+
+TAB_loci.j <- cbind(locus_scores.j, rdadapt_env.j)
+TAB_loci.j  <- TAB_loci.j %>% mutate(type =
+                                       case_when(p.values > 0.0009094088
+ ~ "Neutral", ## Value from outliers_new
+                                                 p.values < 0.0009094088
+ ~ "Outliers"))
+
+TAB_var.j <- as.data.frame(scores(RDA_env.j, choices=c(1,2), display="bp")) # pull the biplot scores
+
+## Get % variation described by the first two pRDA axes 
+## Variation of constrained pRDA axis/All variation of constrained axes 
+(RDA_env.j[["CCA"]]$eig[1]/RDA_env.j$tot.chi)*100
+(RDA_env.j[["CCA"]]$eig[2]/RDA_env.j$tot.chi)*100
+
+(RDA_env.j[["CCA"]]$eig[1]/RDA_env.j[["CCA"]]$tot.chi)*100
+(RDA_env.j[["CCA"]]$eig[2]/RDA_env.j[["CCA"]]$tot.chi)*100
+
+
+## Biplot of RDA loci and variables scores
+j_FigS4 <- ggplot() +
+  geom_point(data = TAB_loci.j, aes(x=RDA1, y=RDA2, colour = type), size = 1.4, alpha = 0.4) +
+  geom_segment(data = TAB_var.j, aes(xend=RDA1*.03, yend=RDA2*.03, x=0, y=0), colour="black", size=0.25, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+  geom_text_repel(data = TAB_var.j, aes(x=RDA1*0.03, y=RDA2*.03, label = c("maturity days", "water stress", "water stress (vegetative)", "average temp", "average temp (vegetative)", "cold temp", "cold temp (vegetative)", "solar radiation", "solar radiation (vegetative)")), size = 3) +
+  ggtitle(expression("Rice subsp." * italic(" japonica"))) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "RDA1 (1.9979%)",    
+       y = "RDA2 (1.4158%)") +
+  scale_color_manual(values = c("#CCB6B6","#776565"))
+
+## Make a file of the environmentally-related sites
+write.csv(outliers_rdadapt_env.j, file="./Genotypes/pRDA_Outliers/J_outliers_rdadapt_env.csv")
+#outliers_rdadapt_env.j <- read.csv("./Genotypes/pRDA_Outliers/J_outliers_rdadapt_env.csv")
+
+geno.j_ENV <- geno.j.sub[, which((names(geno.j.sub) %in% outliers_rdadapt_env.j)==TRUE)]
+
+geno.j_FT <- read.table("./Genotypes/FT_loci/japonica_outFT_prunedLD_recoded.txt", header=T)
+geno.j_FT <- subset(geno.j_FT[-c(1,3:6)], (IID %in% geno.j.sub$IID))
+
+# Retain only the unique sites across the set of FT and climate-related SNPs
+geno.j_FINAL <- unique(cbind(geno.j_FT, geno.j_ENV))
+
+write.csv(geno.j_FINAL, file="./Genotypes/ForGF/geno.j_FinalSNPs.txt")
+#geno.j_FINAL <- read.csv("./Genotypes/ForGF/geno.j_FinalSNPs.txt")
+```
+
+```{r, Sorghum}
+# Sorghum genetic data
+geno.s <- read.table("./Genotypes/LDpruned_Genotypes/sorghum_LD_pruned_recoded.txt", header=T)
+geno.s$IID <- gsub("\\..*","", geno.s$IID)
+
+## Restrict and sort geno file by accessions in store.control_b and drop extra INFO columns
+geno.s.sub <- subset(geno.s[-c(1,3:6)], (IID %in% rownames(store.control_s)))
+
+store.control_s <- store.control_s %>%
+  tibble::rownames_to_column(var = "Accession")
+
+# Perform the join
+env.coord.s <- left_join(store.control_s, SorghumMaster, by = "Accession")
+
+AllFreq.s <- aggregate(geno.s.sub, by = list(paste(env.coord.s$Latitude, env.coord.s$Longitude)), function(x) mean(x, na.rm = T)) 
+row.names(AllFreq.s) <- as.character(AllFreq.s$Group.1)
+
+agg.env.s <- aggregate(env.coord.s, by = list(paste(env.coord.s$Latitude, env.coord.s$Longitude)), function(x) mean(x, na.rm = T))
+
+## Extracting the first 3 PCs to account for population structure in the pRDA
+pca.s <- rda(AllFreq.s[,-c(1:2)], scale=T)
+PCs.s <- scores(pca.s, choices=c(1:3), display="sites", scaling=0)
+PopStruct.s <- data.frame(Population = AllFreq.s[,1], PCs.s)
+colnames(PopStruct.s) <- c("Population", "PC1", "PC2", "PC3")
+
+## Bind population structure data to the climate data for each "Population" 
+Variables.s <- left_join(PopStruct.s, agg.env.s[,-c(2,18)], by=c("Population"="Group.1"))
+
+## Scan the genome for loci associated with  variables we will use in the GF models 
+RDA_env.s <- rda(AllFreq.s[-c(1:2)] ~ maturity_days_avg + water_cum_adj_avg + water_veg_avg +
+                   water_repro_adj_avg + tmpavg_cum_adj_avg + tmpavg_veg_avg +
+                   tmpavg_repro_adj_avg + cold_cum_adj_avg + cold_veg_avg + cold_repro_adj_avg +
+                   solar_cum_adj_avg + solar_veg_avg + solar_repro_adj_avg +
+                   Condition(PC1 + PC2 + PC3), Variables.s)
+
+saveRDS(RDA_env.s, file="./RDA_Objects/Sorghum_RDAmodel_output.rds")
+#RDA_env.s <- readRDS("./RDA_Objects/Sorghum_RDAmodel_output.rds")
+
+screeplot(RDA_env.s, main="Eigenvalues of constrained axes")
+
+# Run the radapt function to return q- and p-values for all loci included in the pRDA model 
+rdadapt_env.s <- rdadapt(RDA_env.s, 2) 
+rownames(rdadapt_env.s) <- names(RDA_env.s[["colsum"]])
+Loci = head(RDA_env.s[["Ybar"]])
+
+# Outliers by z-score 
+outliers_new.s <- rdadapt_env.s %>%     
+  arrange(p.values) %>% 
+  slice(1:1000) %>%
+  tibble::rownames_to_column(., "Loci")
+
+## List of outlier names
+outliers_rdadapt_env.s <- as.character(outliers_new.s$Loci) 
+
+locus_scores.s <- scores(RDA_env.s, choices=c(1:2), display="species", scaling="none") 
+
+TAB_loci.s <- cbind(locus_scores.s, rdadapt_env.s)
+TAB_loci.s  <- TAB_loci.s %>% mutate(type =
+                                       case_when(p.values > 5.349775e-07 ~ "Neutral", ## Value from outliers_new
+                                                 p.values < 5.349775e-07 ~ "Outliers"))
+
+TAB_var.s <- as.data.frame(scores(RDA_env.s, choices=c(1,2), display="bp")) # pull the biplot scores
+
+## Get % variation described by the first two pRDA axes 
+## Variation of constrained pRDA axis/All variation of constrained axes 
+(RDA_env.s[["CCA"]]$eig[1]/RDA_env.s$tot.chi)*100
+(RDA_env.s[["CCA"]]$eig[2]/RDA_env.s$tot.chi)*100
+
+(RDA_env.s[["CCA"]]$eig[1]/RDA_env.s[["CCA"]]$tot.chi)*100
+(RDA_env.s[["CCA"]]$eig[2]/RDA_env.s[["CCA"]]$tot.chi)*100
+
+## Biplot of RDA loci and variables scores
+s_FigS4 <- ggplot() +
+  geom_point(data = TAB_loci.s, aes(x=RDA1, y=RDA2, colour = type), size = 1.4, alpha = 0.4) +
+  geom_segment(data = TAB_var.s, aes(xend=RDA1*.03, yend=RDA2*.03, x=0, y=0), colour="black", size=0.25, linetype=1, arrow=arrow(length = unit(0.02, "npc"))) +
+  geom_text_repel(data = TAB_var.s, aes(x=RDA1*0.03, y=RDA2*.03, label = c("maturity days", "water stress", "water stress (vegetative)", "average temp", "average temp (vegetative)", "cold temp", "cold temp (vegetative)", "solar radiation", "solar radiation (vegetative)")), size = 3) +
+  ggtitle("Sorghum") + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "RDA1 (0.8269%)",    
+       y = "RDA2 (0.6892%)") + 
+  scale_color_manual(values = c("#CCB6B6","#776565"))
+
+## Make a file of the environmentally-related sites
+write.csv(outliers_rdadapt_env.s, file="./Genotypes/pRDA_Outliers/S_outliers_rdadapt_env.csv")
+#outliers_rdadapt_env.s <- read.csv("./Genotypes/pRDA_Outliers/S_outliers_rdadapt_env.csv")
+
+geno.s_ENV <- geno.s.sub[, which((names(geno.s.sub) %in% outliers_rdadapt_env.s)==TRUE)]
+
+geno.s_FT <- read.table("./Genotypes/FT_loci/sorghum_outFT_prunedLD_recoded.txt", header=T)
+geno.s_FT$IID <- gsub("\\..*","", geno.s_FT$IID)
+
+geno.s_FT <- subset(geno.s_FT[-c(1,3:6)], (IID %in% geno.s.sub$IID))
+
+# Retain only the unique sites across the set of FT and climate-related SNPs
+geno.s_FINAL <- unique(cbind(geno.s_FT, geno.s_ENV))
+
+write.csv(geno.s_FINAL, file="./Genotypes/ForGF/geno.s_FinalSNPs.txt")
+#geno.s_FINAL <- read.csv("./Genotypes/ForGF/geno.s_FinalSNPs.txt")
+```
+
+```{r, Figure S4}
+pdf("../output/figures/Figure_S4.pdf")
+
+plot_grid(b_FigS4, m_FigS4, i_FigS4, j_FigS4, s_FigS4, nrow = 3)
+
+dev.off()
+```
