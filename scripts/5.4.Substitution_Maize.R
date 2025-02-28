@@ -1,6 +1,6 @@
 ## Substitution analysis for Barley ##
 
-##Adapted from Barley paper Caproni et al. 2022 DOI: 10.1111/gcb.16560
+##Adapted from Caproni et al. 2022 DOI: 10.1111/gcb.16560
 
 # Set working directory 
 setwd("~/OneDrive - The Pennsylvania State University/Research/Food Resilience/NatComm_R1/data/")
